@@ -26,6 +26,21 @@ pub struct Db {
 }
 
 impl Db {
+    async fn new_inner(pool: SqlitePool) -> Result<Self> {
+        // create the initial "sheets" indexing table that we will use to easily check for column names.
+        // `IF NOT EXISTS` enables us to not worry if the database file is new or not.
+        sqlx::query(
+            "\
+                CREATE TABLE IF NOT EXISTS sheets(
+                    id      TEXT NOT NULL PRIMARY KEY
+                );",
+        )
+        .execute(&pool)
+        .await?;
+
+        Ok(Self { pool })
+    }
+
     /// Creates a new Db instance using the given filename as the name of the sqlite database.
     pub async fn new(filename: &str) -> Result<Self> {
         let options = SqliteConnectOptions::new()
@@ -35,18 +50,13 @@ impl Db {
 
         let pool = SqlitePool::connect_with(options).await?;
 
-        // create the initial "sheets" indexing table that we will use to easily check for column names.
-        // `IF NOT EXISTS` enables us to not worry if the database file is new or not.
-        sqlx::query(
-            "\
-                CREATE TABLE IF NOT EXISTS sheets(
-                    id      TEXT NOT NULL PRIMARY KEY,
-                );",
-        )
-        .execute(&pool)
-        .await?;
+        Self::new_inner(pool).await
+    }
 
-        Ok(Self { pool })
+    #[cfg(test)]
+    /// Creates a new Db instance which uses a database in-memory, to avoid creating files when testing.
+    pub async fn new_memory() -> Result<Self> {
+        Self::new_inner(SqlitePool::connect(":memory:").await?).await
     }
 
     /// Generates a new sheet with a unique id, according to the given schema.
@@ -83,7 +93,7 @@ impl Db {
             "CREATE TABLE sheet_{}_columns(
             id      INTEGER NOT NULL PRIMARY KEY,
             name    TEXT    NOT NULL UNIQUE,
-            type    TEXT    NOT NULL,
+            type    TEXT    NOT NULL
         );",
             &sheetid.0
         ))
@@ -97,24 +107,23 @@ impl Db {
         .push_values(schema.columns.iter().enumerate(), |mut b, (i, col)| {
             b.push_bind(i as i64)
                 .push_bind(&col.name)
-                .push(col.kind.get_sql_text());
+                .push_bind(col.kind.get_sql_text());
         })
         .build()
         .execute(&mut *tr)
         .await?;
 
         // this is where we store the actual cell values
-        let mut builder = QueryBuilder::new(&format!(
-            "CREATE TABLE sheet_{} (row INTEGER NOT NULL PRIMARY KEY",
-            &sheetid.0
-        ));
+        let mut builder = QueryBuilder::new(&format!("CREATE TABLE sheet_{} (", &sheetid.0));
 
         // this essentially generates a bunch of columns like this:
+        // row INTEGER NOT NULL PRIMARY KEY,
         // col0 TYPE,
         // col1 TYPE,
         // col2 TYPE,
         // ..etc
         let mut separated = builder.separated(", ");
+        separated.push("row INTEGER NOT NULL PRIMARY KEY");
         for (i, col) in schema.columns.iter().enumerate() {
             separated.push(format_args!("col{} {}", i, col.kind.get_sql_text()));
         }

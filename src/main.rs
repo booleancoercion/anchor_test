@@ -25,6 +25,8 @@ pub async fn main() -> Result<()> {
             .app_data(data.clone())
             // the logger middleware allows actix_web to tap into our logging library very effortlessly.
             .wrap(middleware::Logger::default())
+            // this will ensure that URIs always trim the trailing slash at the end, for consistency purposes
+            .wrap(middleware::NormalizePath::trim())
             .service(web::scope("/sheet").configure(sheet::web::config))
     })
     // set a shutdown timeout, so that any remaining workers have some leeway
