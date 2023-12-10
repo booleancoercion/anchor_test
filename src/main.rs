@@ -1,8 +1,15 @@
-use actix_web::{middleware, App, HttpServer};
+use actix_web::{middleware, web, App, HttpServer};
 use anyhow::Result;
+use db::Db;
 
 mod db;
 mod sheet;
+
+struct AppData {
+    db: Db,
+}
+
+const DB_FILE: &str = "data.sqlite";
 
 #[actix_web::main]
 pub async fn main() -> Result<()> {
@@ -10,10 +17,15 @@ pub async fn main() -> Result<()> {
     // RUST_LOG environment variable.
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
 
+    let db = Db::new(DB_FILE).await?;
+    let data = web::Data::new(AppData { db });
+
     let server = HttpServer::new(move || {
         App::new()
+            .app_data(data.clone())
             // the logger middleware allows actix_web to tap into our logging library very effortlessly.
             .wrap(middleware::Logger::default())
+            .service(web::scope("/sheet").configure(sheet::web::config))
     })
     // set a shutdown timeout, so that any remaining workers have some leeway
     .shutdown_timeout(10)

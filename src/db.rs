@@ -1,4 +1,8 @@
 use anyhow::Result;
+use rand::{
+    distributions::{Alphanumeric, DistString},
+    Rng,
+};
 use sqlx::{sqlite::SqliteConnectOptions, QueryBuilder, SqlitePool};
 
 use crate::sheet;
@@ -6,8 +10,14 @@ use crate::sheet;
 pub struct SheetId(pub String);
 
 impl SheetId {
-    pub fn generate() -> Self {
-        todo!()
+    // arbitrary - should be long enough to support a very, very large amount of sheets without collisions.
+    const LENGTH: usize = 24;
+
+    pub fn generate<R: Rng + ?Sized>(r: &mut R) -> Self {
+        let mut inner = String::new();
+        Alphanumeric.append_string(r, &mut inner, Self::LENGTH);
+
+        Self(inner)
     }
 }
 
@@ -54,7 +64,7 @@ impl Db {
 
         // loop is necessary in case of duplicates. again, astronomically low chance.
         let sheetid = loop {
-            let sheetid = SheetId::generate();
+            let sheetid = SheetId::generate(&mut rand::thread_rng());
 
             if sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM sheets WHERE id = ?);")
                 .bind(&sheetid.0)
@@ -93,11 +103,17 @@ impl Db {
         .execute(&mut *tr)
         .await?;
 
+        // this is where we store the actual cell values
         let mut builder = QueryBuilder::new(&format!(
             "CREATE TABLE sheet_{} (row INTEGER NOT NULL PRIMARY KEY",
             &sheetid.0
         ));
 
+        // this essentially generates a bunch of columns like this:
+        // col0 TYPE,
+        // col1 TYPE,
+        // col2 TYPE,
+        // ..etc
         let mut separated = builder.separated(", ");
         for (i, col) in schema.columns.iter().enumerate() {
             separated.push(format_args!("col{} {}", i, col.kind.get_sql_text()));

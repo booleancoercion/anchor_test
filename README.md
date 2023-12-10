@@ -25,6 +25,19 @@ The server implements 3 endpoints, as required:
     Column names must be unique.  
     Column type must be one of `boolean`, `int`,`double` or `string`.
 
+    The response body will be a JSON object. Successful responses will have the format:
+    ```json5
+    {
+        "sheet_id": "<generated sheet id>"
+    }
+    ```
+    Otherwise, error responses will have the format:
+    ```json5
+    {
+        "error": "<explanation>"
+    }
+    ```
+
 - `POST /sheet/:sheetid` - set a specific cell's value within the specified sheet.
     The request body must be a JSON object with the following format:
     ```json5
@@ -41,7 +54,7 @@ The server implements 3 endpoints, as required:
     Lookup cells cannot form cycles - attempting to do so will fail with an error.
 
 - `GET /sheet/:sheetid` - get the content of the entire sheet with the given id.
-    The response body will be a JSON object witht the following format:
+    The response body will be a JSON object with the following format:
     ```json5
     {
         "columns": {

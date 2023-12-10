@@ -1,6 +1,8 @@
-use std::{collections::HashSet, fmt::Display};
+use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
+
+pub mod web;
 
 #[derive(Serialize, Deserialize)]
 pub struct Schema {
