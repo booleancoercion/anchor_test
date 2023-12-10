@@ -11,7 +11,7 @@ $ cargo run --release
 The server implements 3 endpoints, as required:
 - `POST /sheet` - create a new sheet using the provided schema.
     The request body (i.e. the sheet schema) must be a JSON object with the following format:
-    ```json
+    ```json5
     {
         "columns": [
             {
@@ -27,11 +27,11 @@ The server implements 3 endpoints, as required:
 
 - `POST /sheet/:sheetid` - set a specific cell's value within the specified sheet.
     The request body must be a JSON object with the following format:
-    ```json
+    ```json5
     {
         "column": "<column name>",
-        "row": <row number>,
-        "value": <value>
+        "row": /* <row number> */,
+        "value": /* <value> */
     }
     ```
     `column` must be a name belonging to an existing column within the sheet.  
@@ -42,13 +42,13 @@ The server implements 3 endpoints, as required:
 
 - `GET /sheet/:sheetid` - get the content of the entire sheet with the given id.
     The response body will be a JSON object witht the following format:
-    ```json
+    ```json5
     {
         "columns": {
             "<column name>": [
                 {
-                    "row": <cell row>,
-                    "value": <cell value>
+                    "row": /* <cell row> */,
+                    "value": /* <cell value> */
                 },
                 // ... (one entry for each populated cell in the column)
             ],
