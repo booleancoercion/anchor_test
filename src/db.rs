@@ -3,11 +3,14 @@ use rand::{
     distributions::{Alphanumeric, DistString},
     Rng,
 };
+use serde::Deserialize;
 use sqlx::{sqlite::SqliteConnectOptions, QueryBuilder, SqlitePool};
 
-use crate::sheet;
+use crate::sheet::{self, CellValue, SchemaColumnKind};
 
-pub struct SheetId(pub String);
+#[derive(Deserialize)]
+#[serde(try_from = "&str")]
+pub struct SheetId(String);
 
 impl SheetId {
     // arbitrary - should be long enough to support a very, very large amount of sheets without collisions.
@@ -18,6 +21,28 @@ impl SheetId {
         Alphanumeric.append_string(r, &mut inner, Self::LENGTH);
 
         Self(inner)
+    }
+
+    pub fn inner(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<&str> for SheetId {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &str) -> Result<Self> {
+        if value.len() != Self::LENGTH {
+            anyhow::bail!(
+                "invalid length: expected {}, got {}",
+                Self::LENGTH,
+                value.len()
+            );
+        } else if value.chars().any(|x| !x.is_ascii_alphanumeric()) {
+            anyhow::bail!("invalid content: {value} is not alphanumeric");
+        } else {
+            Ok(Self(value.into()))
+        }
     }
 }
 
@@ -133,5 +158,75 @@ impl Db {
 
         tr.commit().await?;
         Ok(sheetid)
+    }
+
+    pub async fn insert_cell(&self, sheetid: &SheetId, cell: &sheet::Cell) -> Result<()> {
+        let mut tr = self.pool.begin().await?;
+
+        if sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM sheets WHERE id = ?);")
+            .bind(&sheetid.0)
+            .fetch_one(&mut *tr)
+            .await?
+            == 0
+        {
+            anyhow::bail!("sheet doesn't exist");
+        }
+
+        // this format is ok, since SheetId is sanitized when deserialized
+        let Some((colid, kind)): Option<(i64, String)> = sqlx::query_as(&format!(
+            "SELECT id, type FROM sheet_{}_columns WHERE name = ?;",
+            sheetid.inner()
+        ))
+        .bind(&cell.column)
+        .fetch_optional(&mut *tr)
+        .await?
+        else {
+            anyhow::bail!("invalid column name");
+        };
+
+        if kind != SchemaColumnKind::from(&cell.value).get_sql_text() {
+            anyhow::bail!("invalid column type");
+        }
+
+        // again, the format is OK since everything is sanitized
+        let query = format!("INSERT INTO sheet_{0} (row, col{1}) VALUES(?, ?) ON CONFLICT(row) DO UPDATE SET col{1} = excluded.col{1};", sheetid.inner(), colid);
+        let query = sqlx::query(&query).bind(cell.row);
+
+        // this is needed because they all have different types
+        let query = match &cell.value {
+            CellValue::Boolean(x) => query.bind(x),
+            CellValue::Double(x) => query.bind(x),
+            CellValue::Int(x) => query.bind(x),
+            CellValue::String(x) => query.bind(x),
+        };
+
+        query.execute(&mut *tr).await?;
+
+        tr.commit().await?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SheetId;
+
+    #[test]
+    fn sheet_id_valid_try_from() {
+        let str = "abCDefGHijklMnOPqrst1234";
+        let sheet_id = SheetId::try_from(str).unwrap();
+        assert_eq!(sheet_id.inner(), str)
+    }
+
+    #[test]
+    #[should_panic]
+    fn sheet_id_invalid_try_from_length() {
+        let _ = SheetId::try_from("invalidlength").unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    fn sheet_id_invalid_try_from_content() {
+        let _ = SheetId::try_from("invalid characters!zzzzz").unwrap();
     }
 }

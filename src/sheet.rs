@@ -50,6 +50,33 @@ impl SchemaColumnKind {
     }
 }
 
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub struct Cell {
+    pub column: String,
+    pub row: i64,
+    pub value: CellValue,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum CellValue {
+    Boolean(bool),
+    Int(i64),
+    Double(f64),
+    String(String),
+}
+
+impl From<&CellValue> for SchemaColumnKind {
+    fn from(value: &CellValue) -> Self {
+        match value {
+            CellValue::Boolean(_) => Self::Boolean,
+            CellValue::Double(_) => Self::Double,
+            CellValue::Int(_) => Self::Int,
+            CellValue::String(_) => Self::String,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,5 +112,45 @@ mod tests {
     #[test]
     fn it_deserializes() {
         let _: Schema = serde_json::from_str(VALID_POST_PAYLOAD).unwrap();
+    }
+
+    #[test]
+    fn valid_cells_deserialize() {
+        assert_eq!(
+            serde_json::from_str::<Cell>(r#"{"column": "A", "row": 5, "value": true}"#).unwrap(),
+            Cell {
+                column: String::from("A"),
+                row: 5,
+                value: CellValue::Boolean(true)
+            }
+        );
+
+        assert_eq!(
+            serde_json::from_str::<Cell>(r#"{"column": "B", "row": -1, "value": 50}"#).unwrap(),
+            Cell {
+                column: String::from("B"),
+                row: -1,
+                value: CellValue::Int(50)
+            }
+        );
+
+        assert_eq!(
+            serde_json::from_str::<Cell>(r#"{"column": "C", "row": 0, "value": 5.0}"#).unwrap(),
+            Cell {
+                column: String::from("C"),
+                row: 0,
+                value: CellValue::Double(5.0)
+            }
+        );
+
+        assert_eq!(
+            serde_json::from_str::<Cell>(r#"{"column": "D", "row": 38291, "value": "string"}"#)
+                .unwrap(),
+            Cell {
+                column: String::from("D"),
+                row: 38291,
+                value: CellValue::String("string".into())
+            }
+        );
     }
 }
