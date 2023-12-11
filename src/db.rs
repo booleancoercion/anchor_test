@@ -76,11 +76,11 @@ impl Db {
         let sheetid = loop {
             let sheetid = SheetId::generate(&mut rand::thread_rng());
 
-            if sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM sheets WHERE id = ?);")
+            if sqlx::query("INSERT INTO sheets (id) VALUES (?) RETURNING id;")
                 .bind(&sheetid.0)
-                .fetch_one(&mut *tr)
+                .fetch_optional(&mut *tr)
                 .await?
-                == 0
+                .is_some()
             {
                 break sheetid;
             }
