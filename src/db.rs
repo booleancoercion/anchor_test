@@ -8,7 +8,7 @@ use rand::{
 use serde::Deserialize;
 use sqlx::{sqlite::SqliteConnectOptions, QueryBuilder, Row, SqlitePool};
 
-use crate::sheet::{self, CellValue, SchemaColumnKind};
+use crate::sheet::{self, CellValue, SchemaColumnKind, SheetContentColumn};
 
 #[derive(Deserialize)]
 #[serde(try_from = "&str")]
@@ -396,7 +396,7 @@ impl Db {
         sheetid: &SheetId,
         kind: SchemaColumnKind,
         col_id: i64,
-    ) -> Result<HashMap<i64, CellValue>> {
+    ) -> Result<HashMap<i64, Option<CellValue>>> {
         let rows = sqlx::query(&format!(
             "SELECT row, col{0} FROM sheet_{1} WHERE NOT col{0} IS NULL;",
             col_id, &sheetid.0
@@ -416,7 +416,7 @@ impl Db {
                     SchemaColumnKind::String => CellValue::String(row.get::<String, usize>(1)),
                 };
 
-                (id, val)
+                (id, Some(val))
             })
             .collect())
     }
@@ -444,7 +444,7 @@ impl Db {
         }
 
         let column_table = Self::get_column_table(&mut tr, sheetid).await?;
-        let regular_content = {
+        let mut regular_content = {
             let mut regular_content = vec![];
             for (i, (_, kind)) in column_table.iter().enumerate() {
                 let column_content =
@@ -453,10 +453,45 @@ impl Db {
             }
             regular_content
         };
-        let lookups = Self::get_lookups(&mut tr, sheetid).await?;
+        let mut unresolved_lookups = Self::get_lookups(&mut tr, sheetid).await?;
+        tr.commit().await?; // we commit here to not hold up the database - we got all the data out at this point
 
-        tr.commit().await?;
-        todo!()
+        // this loop efficiently resolves all of the lookup() entries. we find continuous chains of lookup()s, and evaluate them all at once.
+        while !unresolved_lookups.is_empty() {
+            let mut stack = vec![];
+
+            let mut current_key = *unresolved_lookups.keys().next().unwrap();
+            loop {
+                stack.push(current_key);
+                if let Some(next_key) = unresolved_lookups.remove(&current_key) {
+                    current_key = next_key;
+                } else {
+                    let val = regular_content[current_key.0 as usize]
+                        .get(&current_key.1)
+                        .cloned()
+                        .flatten();
+                    for key in &stack {
+                        regular_content[key.0 as usize].insert(key.1, val.clone());
+                    }
+                    break;
+                }
+            }
+        }
+
+        let mut output = HashMap::new();
+        // using .rev() because we're continously popping from regular_content (so as to not clone anything)
+        for (name, _) in column_table.into_iter().rev() {
+            let col = regular_content
+                .pop()
+                .unwrap()
+                .into_iter()
+                .map(|(row, value)| SheetContentColumn { row, value })
+                .collect();
+
+            output.insert(name, col);
+        }
+
+        Ok(sheet::SheetContent { columns: output })
     }
 }
 

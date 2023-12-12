@@ -126,13 +126,13 @@ impl From<&CellValue> for SchemaColumnKind {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SheetContent {
-    pub columns: HashMap<String, SheetContentColumn>,
+    pub columns: HashMap<String, Vec<SheetContentColumn>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SheetContentColumn {
-    pub row: String,
-    pub value: CellValue,
+    pub row: i64,
+    pub value: Option<CellValue>,
 }
 
 #[cfg(test)]
