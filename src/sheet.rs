@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod web;
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Schema {
     pub columns: Vec<SchemaColumn>,
 }
@@ -25,7 +25,7 @@ impl Schema {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct SchemaColumn {
     pub name: String,
     #[serde(rename = "type")]
@@ -78,7 +78,7 @@ pub enum CellValue {
     String(String),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LookupCellValue {
     pub target_col: String,
     pub target_row: i64,
@@ -138,6 +138,10 @@ mod tests {
             "type": "int"
         },
         {
+            "name": "B2",
+            "type": "int"
+        },
+        {
             "name": "C",
             "type": "double"
         },
@@ -155,7 +159,34 @@ mod tests {
 
     #[test]
     fn it_deserializes() {
-        let _: Schema = serde_json::from_str(VALID_POST_PAYLOAD).unwrap();
+        let schema: Schema = serde_json::from_str(VALID_POST_PAYLOAD).unwrap();
+        assert_eq!(
+            schema,
+            Schema {
+                columns: vec![
+                    SchemaColumn {
+                        name: "A".into(),
+                        kind: SchemaColumnKind::Boolean
+                    },
+                    SchemaColumn {
+                        name: "B".into(),
+                        kind: SchemaColumnKind::Int
+                    },
+                    SchemaColumn {
+                        name: "B2".into(),
+                        kind: SchemaColumnKind::Int
+                    },
+                    SchemaColumn {
+                        name: "C".into(),
+                        kind: SchemaColumnKind::Double
+                    },
+                    SchemaColumn {
+                        name: "D".into(),
+                        kind: SchemaColumnKind::String
+                    }
+                ]
+            }
+        );
     }
 
     #[test]
@@ -216,5 +247,23 @@ mod tests {
         let mut schema: Schema = serde_json::from_str(VALID_POST_PAYLOAD).unwrap();
         schema.columns[0].name = r#""quotes""#.into();
         assert!(!schema.is_valid());
+    }
+
+    #[test]
+    fn valid_lookup() {
+        let val = CellValue::String(r#"lookup("hello", 5)"#.into());
+        assert_eq!(
+            val.is_lookup(),
+            Some(LookupCellValue {
+                target_col: "hello".into(),
+                target_row: 5
+            })
+        )
+    }
+
+    #[test]
+    fn invalid_lookup() {
+        let val = CellValue::String(r#"yo"#.into());
+        assert!(val.is_lookup().is_none())
     }
 }

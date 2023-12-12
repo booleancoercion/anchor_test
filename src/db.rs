@@ -238,6 +238,10 @@ impl Db {
         mut target_col_id: i64,
         mut target_row: i64,
     ) -> Result<bool> {
+        if col_id == target_col_id && row == target_row {
+            return Ok(true);
+        }
+
         let query = format!(
             "SELECT target_col_id, target_row FROM sheet_{}_lookups WHERE col_id = ? AND row = ?;",
             &sheetid.0
