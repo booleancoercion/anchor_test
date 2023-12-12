@@ -101,7 +101,7 @@ async fn get_sheetid(
         .with_status(StatusCode::BAD_REQUEST);
     };
 
-    match data.db.get_sheet(&sheetid).await {
+    match data.db.get_sheet(&sheetid, data.no_lookup_nulls).await {
         Ok(content) => web::Json(GetSheetIdResponse::Success(content)).customize(),
         Err(why) => web::Json(GetSheetIdResponse::Failure {
             error: why.to_string(),

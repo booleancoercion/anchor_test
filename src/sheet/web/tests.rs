@@ -2,18 +2,22 @@ use actix_web::http::header::ContentType;
 use actix_web::test;
 
 use crate::sheet::tests::VALID_POST_PAYLOAD;
+use crate::sheet::{CellValue, SheetContent};
 
 use super::PostResponse;
 
 // this is a macro because frankly writing the return type would be a hassle
 macro_rules! init_service {
-    () => {{
+    ($lookup_nulls:expr) => {{
         let _ = ::env_logger::builder()
             .is_test(true)
             .filter_level(::log::LevelFilter::max())
             .try_init();
         let db = crate::db::Db::new_memory().await.unwrap();
-        let data = ::actix_web::web::Data::new(crate::AppData { db });
+        let data = ::actix_web::web::Data::new(crate::AppData {
+            db,
+            no_lookup_nulls: $lookup_nulls,
+        });
         ::actix_web::test::init_service(
             ::actix_web::App::new()
                 .app_data(data)
@@ -22,6 +26,10 @@ macro_rules! init_service {
         )
         .await
     }};
+
+    () => {
+        init_service!(false)
+    };
 }
 
 #[actix_web::test]
@@ -440,4 +448,199 @@ async fn test_post_sheetid_update_lookup_cell() {
     let resp = test::call_service(&app, req).await;
     dbg!(&resp);
     assert!(resp.status().is_success());
+}
+
+#[actix_web::test]
+async fn test_get_sheetid_lookup_chain() {
+    let app = init_service!();
+
+    let sheet_id = get_standard_sheet(&app).await.expect("valid sheet failed");
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/sheet/{sheet_id}"))
+        .set_payload(r#"{ "column": "B", "row": 5, "value": "lookup(\"B\", 4)" }"#)
+        .insert_header(ContentType::json())
+        .to_request();
+    test::call_service(&app, req).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/sheet/{sheet_id}"))
+        .set_payload(r#"{ "column": "B", "row": 4, "value": "lookup(\"B\", 3)" }"#)
+        .insert_header(ContentType::json())
+        .to_request();
+    test::call_service(&app, req).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/sheet/{sheet_id}"))
+        .set_payload(r#"{ "column": "B", "row": 3, "value": 10 }"#)
+        .insert_header(ContentType::json())
+        .to_request();
+    test::call_service(&app, req).await;
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/sheet/{sheet_id}"))
+        .to_request();
+    let resp: SheetContent = test::call_and_read_body_json(&app, req).await;
+    let resp = resp.with_sorted_columns();
+
+    let should_be = SheetContent::build_with_triples(&[
+        ("B", 5, Some(CellValue::Int(10))),
+        ("B", 4, Some(CellValue::Int(10))),
+        ("B", 3, Some(CellValue::Int(10))),
+    ])
+    .with_potential_empty_columns(&["A", "B2", "C", "D"])
+    .with_sorted_columns();
+
+    assert_eq!(resp, should_be);
+}
+
+#[actix_web::test]
+async fn test_get_sheetid_various() {
+    let app = init_service!();
+
+    let sheet_id = get_standard_sheet(&app).await.expect("valid sheet failed");
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/sheet/{sheet_id}"))
+        .set_payload(r#"{ "column": "A", "row": 50, "value": true }"#)
+        .insert_header(ContentType::json())
+        .to_request();
+    test::call_service(&app, req).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/sheet/{sheet_id}"))
+        .set_payload(r#"{ "column": "B", "row": 4, "value": 0 }"#)
+        .insert_header(ContentType::json())
+        .to_request();
+    test::call_service(&app, req).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/sheet/{sheet_id}"))
+        .set_payload(r#"{ "column": "C", "row": 3, "value": -1.12 }"#)
+        .insert_header(ContentType::json())
+        .to_request();
+    test::call_service(&app, req).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/sheet/{sheet_id}"))
+        .set_payload(r#"{ "column": "D", "row": 1, "value": "hello!" }"#)
+        .insert_header(ContentType::json())
+        .to_request();
+    test::call_service(&app, req).await;
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/sheet/{sheet_id}"))
+        .to_request();
+    let resp: SheetContent = test::call_and_read_body_json(&app, req).await;
+    let resp = resp.with_sorted_columns();
+
+    let should_be = SheetContent::build_with_triples(&[
+        ("A", 50, Some(CellValue::Boolean(true))),
+        ("B", 4, Some(CellValue::Int(0))),
+        ("C", 3, Some(CellValue::Double(-1.12))),
+        ("D", 1, Some(CellValue::String("hello!".into()))),
+    ])
+    .with_potential_empty_columns(&["B2"])
+    .with_sorted_columns();
+
+    assert_eq!(resp, should_be);
+}
+
+#[actix_web::test]
+async fn test_get_sheetid_with_lookup_nulls() {
+    let app = init_service!();
+
+    let sheet_id = get_standard_sheet(&app).await.expect("valid sheet failed");
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/sheet/{sheet_id}"))
+        .set_payload(r#"{ "column": "A", "row": 50, "value": "lookup(\"A\", 51)" }"#)
+        .insert_header(ContentType::json())
+        .to_request();
+    test::call_service(&app, req).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/sheet/{sheet_id}"))
+        .set_payload(r#"{ "column": "B", "row": 4, "value": "lookup(\"B\", 5)" }"#)
+        .insert_header(ContentType::json())
+        .to_request();
+    test::call_service(&app, req).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/sheet/{sheet_id}"))
+        .set_payload(r#"{ "column": "C", "row": 3, "value": "lookup(\"C\", 4)" }"#)
+        .insert_header(ContentType::json())
+        .to_request();
+    test::call_service(&app, req).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/sheet/{sheet_id}"))
+        .set_payload(r#"{ "column": "D", "row": 1, "value": "lookup(\"D\", 2)" }"#)
+        .insert_header(ContentType::json())
+        .to_request();
+    test::call_service(&app, req).await;
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/sheet/{sheet_id}"))
+        .to_request();
+    let resp: SheetContent = test::call_and_read_body_json(&app, req).await;
+    let resp = resp.with_sorted_columns();
+
+    let should_be = SheetContent::build_with_triples(&[
+        ("A", 50, None),
+        ("B", 4, None),
+        ("C", 3, None),
+        ("D", 1, None),
+    ])
+    .with_potential_empty_columns(&["B2"])
+    .with_sorted_columns();
+
+    assert_eq!(resp, should_be);
+}
+
+#[actix_web::test]
+async fn test_get_sheetid_without_lookup_nulls() {
+    let app = init_service!(true);
+
+    let sheet_id = get_standard_sheet(&app).await.expect("valid sheet failed");
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/sheet/{sheet_id}"))
+        .set_payload(r#"{ "column": "A", "row": 50, "value": "lookup(\"A\", 51)" }"#)
+        .insert_header(ContentType::json())
+        .to_request();
+    test::call_service(&app, req).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/sheet/{sheet_id}"))
+        .set_payload(r#"{ "column": "B", "row": 4, "value": "lookup(\"B\", 5)" }"#)
+        .insert_header(ContentType::json())
+        .to_request();
+    test::call_service(&app, req).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/sheet/{sheet_id}"))
+        .set_payload(r#"{ "column": "C", "row": 3, "value": "lookup(\"C\", 4)" }"#)
+        .insert_header(ContentType::json())
+        .to_request();
+    test::call_service(&app, req).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/sheet/{sheet_id}"))
+        .set_payload(r#"{ "column": "D", "row": 1, "value": "lookup(\"D\", 2)" }"#)
+        .insert_header(ContentType::json())
+        .to_request();
+    test::call_service(&app, req).await;
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/sheet/{sheet_id}"))
+        .to_request();
+    let resp: SheetContent = test::call_and_read_body_json(&app, req).await;
+    let resp = resp.with_sorted_columns();
+
+    let should_be = SheetContent::build_with_triples(&[])
+        .with_potential_empty_columns(&["A", "B", "B2", "C", "D"])
+        .with_sorted_columns();
+
+    assert_eq!(resp, should_be);
 }

@@ -436,7 +436,11 @@ impl Db {
         .collect())
     }
 
-    pub async fn get_sheet(&self, sheetid: &SheetId) -> Result<sheet::SheetContent> {
+    pub async fn get_sheet(
+        &self,
+        sheetid: &SheetId,
+        no_lookup_nulls: bool,
+    ) -> Result<sheet::SheetContent> {
         let mut tr = self.pool.begin().await?;
 
         if !Self::sheet_exists(&mut tr, sheetid).await? {
@@ -462,16 +466,18 @@ impl Db {
 
             let mut current_key = *unresolved_lookups.keys().next().unwrap();
             loop {
-                stack.push(current_key);
                 if let Some(next_key) = unresolved_lookups.remove(&current_key) {
+                    stack.push(current_key);
                     current_key = next_key;
                 } else {
                     let val = regular_content[current_key.0 as usize]
                         .get(&current_key.1)
                         .cloned()
                         .flatten();
-                    for key in &stack {
-                        regular_content[key.0 as usize].insert(key.1, val.clone());
+                    if !no_lookup_nulls {
+                        for key in &stack {
+                            regular_content[key.0 as usize].insert(key.1, val.clone());
+                        }
                     }
                     break;
                 }

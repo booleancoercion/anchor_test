@@ -1,3 +1,5 @@
+use std::env;
+
 use actix_web::{middleware, web, App, HttpServer};
 use anyhow::Result;
 use db::Db;
@@ -7,6 +9,7 @@ mod sheet;
 
 struct AppData {
     db: Db,
+    no_lookup_nulls: bool,
 }
 
 const DB_FILE: &str = "data.sqlite";
@@ -18,7 +21,10 @@ pub async fn main() -> Result<()> {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
 
     let db = Db::new(DB_FILE).await?;
-    let data = web::Data::new(AppData { db });
+    let data = web::Data::new(AppData {
+        db,
+        no_lookup_nulls: env::var("NO_LOOKUP_NULLS").is_ok(),
+    });
 
     let server = HttpServer::new(move || {
         App::new()

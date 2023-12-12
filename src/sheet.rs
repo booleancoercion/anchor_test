@@ -136,6 +136,40 @@ pub struct SheetContentColumn {
 }
 
 #[cfg(test)]
+impl SheetContent {
+    pub fn build_with_triples(triples: &[(&str, i64, Option<CellValue>)]) -> Self {
+        let mut columns = HashMap::new();
+
+        for (column, row, value) in triples {
+            let column: &mut Vec<SheetContentColumn> =
+                columns.entry(column.to_string()).or_default();
+            column.push(SheetContentColumn {
+                row: *row,
+                value: value.clone(),
+            })
+        }
+
+        Self { columns }
+    }
+
+    pub fn with_potential_empty_columns(mut self, cols: &[&str]) -> Self {
+        for col in cols {
+            self.columns.entry(col.to_string()).or_default();
+        }
+
+        self
+    }
+
+    pub fn with_sorted_columns(mut self) -> Self {
+        for col in self.columns.values_mut() {
+            col.sort_unstable_by_key(|x| x.row);
+        }
+
+        self
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
