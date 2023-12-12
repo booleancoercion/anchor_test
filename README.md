@@ -22,7 +22,7 @@ The server implements 3 endpoints, as required:
         ]
     }
     ```
-    Column names must be unique.  
+    Column names must be unique, and must not contain double quotes (`"`).  
     Column type must be one of `boolean`, `int`,`double` or `string`.
 
     The response body will be a JSON object. Successful responses will have the format:
@@ -49,7 +49,7 @@ The server implements 3 endpoints, as required:
     ```
     `column` must be a name belonging to an existing column within the sheet.  
     `row` must be an integer.  
-    `value` must be a valid value according to the column's type, OR a string of the form `"lookup(\"<column name>\",<row number>)"` where the column name is a valid name in the same sheet.
+    `value` must be a valid value according to the column's type, OR a string of the form `"lookup(\"<column name>\",<row number>)"` (more specifically, matching the regex `^lookup\(\s*"([^"]+)"\s*,\s*(\d+)\s*\)$`) where the column name is a valid name in the same sheet.
 
     Lookup cells cannot form cycles - attempting to do so will fail with an error.
 

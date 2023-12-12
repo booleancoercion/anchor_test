@@ -84,36 +84,29 @@ impl Db {
         Self::new_inner(SqlitePool::connect(":memory:").await?).await
     }
 
-    /// Generates a new sheet with a unique id, according to the given schema.
-    ///
-    /// # Errors
-    /// In case the schema is invalid, or a database failure.
-    pub async fn new_sheet(&self, schema: &sheet::Schema) -> Result<SheetId> {
-        if !schema.is_valid() {
-            anyhow::bail!("Invalid schema");
-        }
-
-        // we need a transaction here, to make sure that a generated sheet id isn't accidentally taken by somebody
-        // else, causing a race condition. the chance of that happening is astronomically small, but not zero nonetheless.
-        let mut tr = self.pool.begin().await?;
-
+    async fn register_random_sheetid(
+        tr: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    ) -> Result<SheetId> {
         // loop is necessary in case of duplicates. again, astronomically low chance.
-        let sheetid = loop {
+        loop {
             let sheetid = SheetId::generate(&mut rand::thread_rng());
 
             if sqlx::query("INSERT INTO sheets (id) VALUES (?) RETURNING id;")
                 .bind(&sheetid.0)
-                .fetch_optional(&mut *tr)
+                .fetch_optional(tr.as_mut())
                 .await?
                 .is_some()
             {
-                break sheetid;
+                break Ok(sheetid);
             }
-        };
+        }
+    }
 
-        // this table is necessary because it's a bad idea to name the database columns using the names that the user gave us.
-        // instead we store the names as plain strings, and we'll use the id to derive a column name.
-        // the `UNIQUE` modifier implicitly creates an index, so later looking up column ids by name will be efficient.
+    async fn build_columns_table(
+        tr: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        sheetid: &SheetId,
+        schema: &sheet::Schema,
+    ) -> Result<()> {
         sqlx::query(&format!(
             "CREATE TABLE sheet_{}_columns(
             id      INTEGER NOT NULL PRIMARY KEY,
@@ -122,7 +115,7 @@ impl Db {
         );",
             &sheetid.0
         ))
-        .execute(&mut *tr)
+        .execute(tr.as_mut())
         .await?;
 
         QueryBuilder::new(format!(
@@ -135,10 +128,17 @@ impl Db {
                 .push_bind(col.kind.get_sql_text());
         })
         .build()
-        .execute(&mut *tr)
+        .execute(tr.as_mut())
         .await?;
 
-        // this is where we store the actual cell values
+        Ok(())
+    }
+
+    async fn build_sheet_table(
+        tr: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        sheetid: &SheetId,
+        schema: &sheet::Schema,
+    ) -> Result<()> {
         let mut builder = QueryBuilder::new(&format!("CREATE TABLE sheet_{} (", &sheetid.0));
 
         // this essentially generates a bunch of columns like this:
@@ -154,10 +154,111 @@ impl Db {
         }
         separated.push_unseparated(");");
 
-        builder.build().execute(&mut *tr).await?;
+        builder.build().execute(tr.as_mut()).await?;
+
+        Ok(())
+    }
+
+    async fn build_lookup_table(
+        tr: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        sheetid: &SheetId,
+    ) -> Result<()> {
+        sqlx::query(&format!(
+            "CREATE TABLE sheet_{}_lookups(
+            col_id          INTEGER NOT NULL,
+            row             INTEGER NOT NULL,
+            target_col_id   INTEGER NOT NULL,
+            target_row      INTEGER NOT NULL
+        );",
+            &sheetid.0
+        ))
+        .execute(tr.as_mut())
+        .await?;
+
+        sqlx::query(&format!(
+            "CREATE UNIQUE INDEX index_lookups ON sheet_{}_lookups (col_id, row);",
+            &sheetid.0
+        ))
+        .execute(tr.as_mut())
+        .await?;
+
+        Ok(())
+    }
+
+    /// Generates a new sheet with a unique id, according to the given schema.
+    ///
+    /// # Errors
+    /// In case the schema is invalid, or a database failure.
+    pub async fn new_sheet(&self, schema: &sheet::Schema) -> Result<SheetId> {
+        if !schema.is_valid() {
+            anyhow::bail!("Invalid schema");
+        }
+
+        // we need a transaction here, to make sure that a generated sheet id isn't accidentally taken by somebody
+        // else, causing a race condition. the chance of that happening is astronomically small, but not zero nonetheless.
+        let mut tr = self.pool.begin().await?;
+
+        let sheetid = Self::register_random_sheetid(&mut tr).await?;
+
+        // this table is necessary because it's a bad idea to name the database columns using the names that the user gave us.
+        // instead we store the names as plain strings, and we'll use the id to derive a column name.
+        // the `UNIQUE` modifier implicitly creates an index, so later looking up column ids by name will be efficient.
+        Self::build_columns_table(&mut tr, &sheetid, schema).await?;
+
+        // this is where we store the actual cell values, apart from lookup cells
+        Self::build_sheet_table(&mut tr, &sheetid, schema).await?;
+
+        // this is where we store only the lookup cells. a cell cannot be in both the above table and this table.
+        Self::build_lookup_table(&mut tr, &sheetid).await?;
 
         tr.commit().await?;
         Ok(sheetid)
+    }
+
+    async fn get_column_by_name(
+        tr: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        sheetid: &SheetId,
+        name: &str,
+    ) -> Result<Option<(i64, SchemaColumnKind)>> {
+        Ok(sqlx::query_as::<_, (i64, String)>(&format!(
+            "SELECT id, type FROM sheet_{}_columns WHERE name = ?;",
+            sheetid.inner()
+        ))
+        .bind(name)
+        .fetch_optional(tr.as_mut())
+        .await?
+        .map(|(id, kind)| (id, SchemaColumnKind::from_sql_text(&kind).unwrap())))
+    }
+
+    async fn detect_cycle(
+        tr: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        sheetid: &SheetId,
+        col_id: i64,
+        row: i64,
+        mut target_col_id: i64,
+        mut target_row: i64,
+    ) -> Result<bool> {
+        let query = format!(
+            "SELECT target_col_id, target_row FROM sheet_{}_lookups WHERE col_id = ? AND row = ?;",
+            &sheetid.0
+        );
+        loop {
+            let Some((new_col_id, new_row)) = sqlx::query_as::<_, (i64, i64)>(&query)
+                .bind(target_col_id)
+                .bind(target_row)
+                .fetch_optional(tr.as_mut())
+                .await?
+            else {
+                return Ok(false);
+            };
+
+            if new_col_id == col_id && new_row == row {
+                return Ok(true);
+            } else {
+                target_col_id = new_col_id;
+                target_row = new_row;
+            }
+        }
     }
 
     pub async fn insert_cell(&self, sheetid: &SheetId, cell: &sheet::Cell) -> Result<()> {
@@ -173,34 +274,87 @@ impl Db {
         }
 
         // this format is ok, since SheetId is sanitized when deserialized
-        let Some((colid, kind)): Option<(i64, String)> = sqlx::query_as(&format!(
-            "SELECT id, type FROM sheet_{}_columns WHERE name = ?;",
-            sheetid.inner()
-        ))
-        .bind(&cell.column)
-        .fetch_optional(&mut *tr)
-        .await?
+        let Some((col_id, kind)) = Self::get_column_by_name(&mut tr, sheetid, &cell.column).await?
         else {
             anyhow::bail!("invalid column name");
         };
 
-        if kind != SchemaColumnKind::from(&cell.value).get_sql_text() {
-            anyhow::bail!("invalid column type");
+        if let Some(lookup) = cell.value.is_lookup() {
+            let Some((target_col_id, target_kind)) =
+                Self::get_column_by_name(&mut tr, sheetid, &lookup.target_col).await?
+            else {
+                anyhow::bail!("invalid target column name");
+            };
+
+            if kind != target_kind {
+                anyhow::bail!("invalid target column type");
+            }
+
+            if Self::detect_cycle(
+                &mut tr,
+                sheetid,
+                col_id,
+                cell.row,
+                target_col_id,
+                lookup.target_row,
+            )
+            .await?
+            {
+                anyhow::bail!("detected lookup cycle");
+            }
+
+            sqlx::query(&format!(
+                "UPDATE sheet_{} SET col{} = NULL WHERE row = ?;",
+                &sheetid.0, col_id
+            ))
+            .bind(cell.row)
+            .execute(&mut *tr)
+            .await?;
+
+            sqlx::query(&format!(
+                "INSERT INTO sheet_{}_lookups
+            (col_id, row, target_col_id, target_row)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(col_id, row)
+            DO UPDATE SET target_col_id = excluded.target_col_id,
+            target_row = excluded.target_row;",
+                &sheetid.0
+            ))
+            .bind(col_id)
+            .bind(cell.row)
+            .bind(target_col_id)
+            .bind(lookup.target_row)
+            .execute(&mut *tr)
+            .await?;
+        } else {
+            if kind != SchemaColumnKind::from(&cell.value) {
+                anyhow::bail!("invalid column type");
+            }
+
+            // we can't have an entry for the same cell in both tables
+            sqlx::query(&format!(
+                "DELETE FROM sheet_{}_lookups WHERE col_id = ? AND row = ?;",
+                &sheetid.0
+            ))
+            .bind(col_id)
+            .bind(cell.row)
+            .execute(&mut *tr)
+            .await?;
+
+            // again, the format is OK since everything is sanitized
+            let query = format!("INSERT INTO sheet_{0} (row, col{1}) VALUES(?, ?) ON CONFLICT(row) DO UPDATE SET col{1} = excluded.col{1};", sheetid.inner(), col_id);
+            let query = sqlx::query(&query).bind(cell.row);
+
+            // this is needed because they all have different types
+            let query = match &cell.value {
+                CellValue::Boolean(x) => query.bind(x),
+                CellValue::Double(x) => query.bind(x),
+                CellValue::Int(x) => query.bind(x),
+                CellValue::String(x) => query.bind(x),
+            };
+
+            query.execute(&mut *tr).await?;
         }
-
-        // again, the format is OK since everything is sanitized
-        let query = format!("INSERT INTO sheet_{0} (row, col{1}) VALUES(?, ?) ON CONFLICT(row) DO UPDATE SET col{1} = excluded.col{1};", sheetid.inner(), colid);
-        let query = sqlx::query(&query).bind(cell.row);
-
-        // this is needed because they all have different types
-        let query = match &cell.value {
-            CellValue::Boolean(x) => query.bind(x),
-            CellValue::Double(x) => query.bind(x),
-            CellValue::Int(x) => query.bind(x),
-            CellValue::String(x) => query.bind(x),
-        };
-
-        query.execute(&mut *tr).await?;
 
         tr.commit().await?;
         Ok(())

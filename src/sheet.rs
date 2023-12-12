@@ -1,5 +1,6 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::OnceLock};
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 pub mod web;
@@ -10,11 +11,12 @@ pub struct Schema {
 }
 
 impl Schema {
-    /// Checks if the schema is valid, i.e. all the column names are unique.
+    /// Checks if the schema is valid, i.e. all the column names are unique
+    /// and none of them contain double quotes.
     pub fn is_valid(&self) -> bool {
         let mut names = HashSet::<&str>::new();
         for col in &self.columns {
-            if !names.insert(&col.name) {
+            if col.name.contains('"') || !names.insert(&col.name) {
                 return false;
             }
         }
@@ -30,7 +32,7 @@ pub struct SchemaColumn {
     pub kind: SchemaColumnKind,
 }
 
-#[derive(Serialize, Deserialize, Copy, Clone, Debug)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SchemaColumnKind {
     Boolean,
@@ -42,10 +44,20 @@ pub enum SchemaColumnKind {
 impl SchemaColumnKind {
     pub fn get_sql_text(&self) -> &'static str {
         match self {
-            SchemaColumnKind::Boolean => "BOOLEAN",
-            SchemaColumnKind::Int => "INTEGER",
-            SchemaColumnKind::Double => "REAL",
-            SchemaColumnKind::String => "TEXT",
+            Self::Boolean => "BOOLEAN",
+            Self::Int => "INTEGER",
+            Self::Double => "REAL",
+            Self::String => "TEXT",
+        }
+    }
+
+    pub fn from_sql_text(text: &str) -> Option<Self> {
+        match text {
+            "BOOLEAN" => Some(Self::Boolean),
+            "INTEGER" => Some(Self::Int),
+            "REAL" => Some(Self::Double),
+            "TEXT" => Some(Self::String),
+            _ => None,
         }
     }
 }
@@ -64,6 +76,38 @@ pub enum CellValue {
     Int(i64),
     Double(f64),
     String(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct LookupCellValue {
+    pub target_col: String,
+    pub target_row: i64,
+}
+
+static LOOKUP_REGEX: OnceLock<Regex> = OnceLock::new();
+
+impl CellValue {
+    pub fn is_lookup(&self) -> Option<LookupCellValue> {
+        let Self::String(s) = &self else {
+            return None;
+        };
+
+        let re = LOOKUP_REGEX
+            .get_or_init(|| Regex::new(r#"^lookup\(\s*"([^"]+)"\s*,\s*(\d+)\s*\)$"#).unwrap());
+
+        let Some((_, [col_name, row])) = re.captures(s).map(|c| c.extract()) else {
+            return None;
+        };
+
+        let Ok(row) = row.parse() else {
+            return None;
+        };
+
+        Some(LookupCellValue {
+            target_col: col_name.into(),
+            target_row: row,
+        })
+    }
 }
 
 impl From<&CellValue> for SchemaColumnKind {
@@ -152,5 +196,25 @@ mod tests {
                 value: CellValue::String("string".into())
             }
         );
+    }
+
+    #[test]
+    fn valid_schema() {
+        let schema: Schema = serde_json::from_str(VALID_POST_PAYLOAD).unwrap();
+        assert!(schema.is_valid());
+    }
+
+    #[test]
+    fn invalid_schema_duplicate() {
+        let mut schema: Schema = serde_json::from_str(VALID_POST_PAYLOAD).unwrap();
+        schema.columns[1].name = "A".into();
+        assert!(!schema.is_valid());
+    }
+
+    #[test]
+    fn invalid_schema_quotes() {
+        let mut schema: Schema = serde_json::from_str(VALID_POST_PAYLOAD).unwrap();
+        schema.columns[0].name = r#""quotes""#.into();
+        assert!(!schema.is_valid());
     }
 }
