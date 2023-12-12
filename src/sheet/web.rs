@@ -1,24 +1,16 @@
-use actix_web::{http::StatusCode, post, web, Responder};
+use actix_web::{get, http::StatusCode, post, web, Responder};
 use serde::{Deserialize, Serialize};
 
 use crate::db::SheetId;
 
 pub fn config(cfg: &mut web::ServiceConfig) {
-    cfg.service(post).service(post_sheetid);
+    cfg.service(post).service(post_sheetid).service(get_sheetid);
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(untagged)]
 enum PostResponse {
     Success { sheet_id: String },
-
-    Failure { error: String },
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(untagged)]
-enum PostSheetIdResponse {
-    Success {},
 
     Failure { error: String },
 }
@@ -49,6 +41,14 @@ async fn post(
     .with_status(StatusCode::BAD_REQUEST)
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(untagged)]
+enum PostSheetIdResponse {
+    Success {},
+
+    Failure { error: String },
+}
+
 #[post("/{sheetid}")]
 async fn post_sheetid(
     data: web::Data<crate::AppData>,
@@ -74,6 +74,36 @@ async fn post_sheetid(
     match data.db.insert_cell(&sheetid, &cell).await {
         Ok(()) => web::Json(PostSheetIdResponse::Success {}).customize(),
         Err(why) => web::Json(PostSheetIdResponse::Failure {
+            error: why.to_string(),
+        })
+        .customize()
+        .with_status(StatusCode::BAD_REQUEST),
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(untagged)]
+enum GetSheetIdResponse {
+    Success(super::SheetContent),
+    Failure { error: String },
+}
+
+#[get("/{sheetid}")]
+async fn get_sheetid(
+    data: web::Data<crate::AppData>,
+    sheetid: Option<web::Path<SheetId>>,
+) -> impl Responder {
+    let Some(sheetid) = sheetid else {
+        return web::Json(GetSheetIdResponse::Failure {
+            error: "invalid sheetid".into(),
+        })
+        .customize()
+        .with_status(StatusCode::BAD_REQUEST);
+    };
+
+    match data.db.get_sheet(&sheetid).await {
+        Ok(content) => web::Json(GetSheetIdResponse::Success(content)).customize(),
+        Err(why) => web::Json(GetSheetIdResponse::Failure {
             error: why.to_string(),
         })
         .customize()

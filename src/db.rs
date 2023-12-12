@@ -1,10 +1,12 @@
+use std::collections::HashMap;
+
 use anyhow::Result;
 use rand::{
     distributions::{Alphanumeric, DistString},
     Rng,
 };
 use serde::Deserialize;
-use sqlx::{sqlite::SqliteConnectOptions, QueryBuilder, SqlitePool};
+use sqlx::{sqlite::SqliteConnectOptions, QueryBuilder, Row, SqlitePool};
 
 use crate::sheet::{self, CellValue, SchemaColumnKind};
 
@@ -265,15 +267,23 @@ impl Db {
         }
     }
 
+    async fn sheet_exists(
+        tr: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        sheetid: &SheetId,
+    ) -> Result<bool> {
+        Ok(
+            sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM sheets WHERE id = ?);")
+                .bind(&sheetid.0)
+                .fetch_one(tr.as_mut())
+                .await?
+                == 1,
+        )
+    }
+
     pub async fn insert_cell(&self, sheetid: &SheetId, cell: &sheet::Cell) -> Result<()> {
         let mut tr = self.pool.begin().await?;
 
-        if sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM sheets WHERE id = ?);")
-            .bind(&sheetid.0)
-            .fetch_one(&mut *tr)
-            .await?
-            == 0
-        {
+        if !Self::sheet_exists(&mut tr, sheetid).await? {
             anyhow::bail!("sheet doesn't exist");
         }
 
@@ -362,6 +372,91 @@ impl Db {
 
         tr.commit().await?;
         Ok(())
+    }
+
+    async fn get_column_table(
+        tr: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        sheetid: &SheetId,
+    ) -> Result<Vec<(String, SchemaColumnKind)>> {
+        let res = sqlx::query_as::<_, (String, String)>(&format!(
+            "SELECT name, type FROM sheet_{}_columns ORDER BY id ASC;",
+            &sheetid.0
+        ))
+        .fetch_all(tr.as_mut())
+        .await?;
+
+        Ok(res
+            .into_iter()
+            .map(|(name, kind)| (name, SchemaColumnKind::from_sql_text(&kind).unwrap()))
+            .collect())
+    }
+
+    async fn get_column_content(
+        tr: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        sheetid: &SheetId,
+        kind: SchemaColumnKind,
+        col_id: i64,
+    ) -> Result<HashMap<i64, CellValue>> {
+        let rows = sqlx::query(&format!(
+            "SELECT row, col{0} FROM sheet_{1} WHERE NOT col{0} IS NULL;",
+            col_id, &sheetid.0
+        ))
+        .fetch_all(tr.as_mut())
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let id = row.get::<i64, usize>(0);
+
+                let val = match kind {
+                    SchemaColumnKind::Boolean => CellValue::Boolean(row.get::<bool, usize>(1)),
+                    SchemaColumnKind::Int => CellValue::Int(row.get::<i64, usize>(1)),
+                    SchemaColumnKind::Double => CellValue::Double(row.get::<f64, usize>(1)),
+                    SchemaColumnKind::String => CellValue::String(row.get::<String, usize>(1)),
+                };
+
+                (id, val)
+            })
+            .collect())
+    }
+
+    async fn get_lookups(
+        tr: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        sheetid: &SheetId,
+    ) -> Result<HashMap<(i64, i64), (i64, i64)>> {
+        Ok(sqlx::query_as::<_, (i64, i64, i64, i64)>(&format!(
+            "SELECT col_id, row, target_col_id, target_row FROM sheet_{}_lookups;",
+            &sheetid.0
+        ))
+        .fetch_all(tr.as_mut())
+        .await?
+        .into_iter()
+        .map(|(a, b, c, d)| ((a, b), (c, d)))
+        .collect())
+    }
+
+    pub async fn get_sheet(&self, sheetid: &SheetId) -> Result<sheet::SheetContent> {
+        let mut tr = self.pool.begin().await?;
+
+        if !Self::sheet_exists(&mut tr, sheetid).await? {
+            anyhow::bail!("sheet doesn't exist");
+        }
+
+        let column_table = Self::get_column_table(&mut tr, sheetid).await?;
+        let regular_content = {
+            let mut regular_content = vec![];
+            for (i, (_, kind)) in column_table.iter().enumerate() {
+                let column_content =
+                    Self::get_column_content(&mut tr, sheetid, *kind, i as i64).await?;
+                regular_content.push(column_content);
+            }
+            regular_content
+        };
+        let lookups = Self::get_lookups(&mut tr, sheetid).await?;
+
+        tr.commit().await?;
+        todo!()
     }
 }
 

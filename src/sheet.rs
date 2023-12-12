@@ -1,4 +1,7 @@
-use std::{collections::HashSet, sync::OnceLock};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::OnceLock,
+};
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -69,7 +72,7 @@ pub struct Cell {
     pub value: CellValue,
 }
 
-#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum CellValue {
     Boolean(bool),
@@ -119,6 +122,17 @@ impl From<&CellValue> for SchemaColumnKind {
             CellValue::String(_) => Self::String,
         }
     }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct SheetContent {
+    pub columns: HashMap<String, SheetContentColumn>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct SheetContentColumn {
+    pub row: String,
+    pub value: CellValue,
 }
 
 #[cfg(test)]
