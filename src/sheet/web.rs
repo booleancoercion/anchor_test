@@ -1,13 +1,13 @@
 use actix_web::{http::StatusCode, post, web, Responder};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::db::SheetId;
 
 pub fn config(cfg: &mut web::ServiceConfig) {
-    cfg.service(post);
+    cfg.service(post).service(post_sheetid);
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(untagged)]
 enum PostResponse {
     Success { sheet_id: String },
@@ -15,7 +15,7 @@ enum PostResponse {
     Failure { error: String },
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(untagged)]
 enum PostSheetIdResponse {
     Success {},
@@ -88,10 +88,12 @@ mod tests {
 
     use crate::sheet::tests::VALID_POST_PAYLOAD;
 
+    use super::PostResponse;
+
     // this is a macro because frankly writing the return type would be a hassle
     macro_rules! init_service {
         () => {{
-            let _ = env_logger::builder()
+            let _ = ::env_logger::builder()
                 .is_test(true)
                 .filter_level(::log::LevelFilter::max())
                 .try_init();
@@ -148,16 +150,17 @@ mod tests {
             let body = ::actix_web::body::to_bytes($resp.into_body())
                 .await
                 .unwrap();
-            dbg!(&body);
+            ::std::dbg!(&body);
             let json: ::serde_json::Value = ::serde_json::from_slice(&body).unwrap();
-            assert!(json.is_object());
-            assert_eq!(
+            ::std::assert!(json.is_object());
+            ::std::assert_eq!(
                 json.as_object()
                     .unwrap()
                     .keys()
                     .collect::<::std::vec::Vec<_>>(),
                 ["error"]
-            )
+            );
+            ::std::assert!(json["error"].is_string());
         }};
     }
 
@@ -206,6 +209,118 @@ mod tests {
         let req = test::TestRequest::post()
             .uri("/sheet")
             .set_payload(r#"{"columns": [{"name": "A", "type": "string"}, {"name": "A", "type": "boolean"}]}"#)
+            .insert_header(ContentType::json())
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert_is_error_response!(resp);
+    }
+
+    async fn get_standard_sheet<S, B>(app: &S) -> anyhow::Result<String>
+    where
+        S: actix_web::dev::Service<
+            actix_http::Request,
+            Response = actix_web::dev::ServiceResponse<B>,
+            Error = actix_web::Error,
+        >,
+        B: actix_web::body::MessageBody,
+    {
+        let req = test::TestRequest::post()
+            .uri("/sheet")
+            .set_payload(VALID_POST_PAYLOAD)
+            .insert_header(ContentType::json())
+            .to_request();
+
+        let resp: PostResponse = test::call_and_read_body_json(&app, req).await;
+        match resp {
+            PostResponse::Success { sheet_id } => Ok(sheet_id),
+            PostResponse::Failure { error } => anyhow::bail!("Error: {error:#?}"),
+        }
+    }
+
+    #[actix_web::test]
+    async fn test_post_sheetid_simple() {
+        let app = init_service!();
+
+        let sheet_id = get_standard_sheet(&app).await.expect("valid sheet failed");
+
+        let req = test::TestRequest::post()
+            .uri(&format!("/sheet/{sheet_id}"))
+            .set_payload(r#"{ "column": "B", "row": 5, "value": 42 }"#)
+            .insert_header(ContentType::json())
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        dbg!(&resp);
+        assert!(resp.status().is_success());
+    }
+
+    #[actix_web::test]
+    async fn test_post_sheetid_update_cell() {
+        let app = init_service!();
+
+        let sheet_id = get_standard_sheet(&app).await.expect("valid sheet failed");
+
+        let req = test::TestRequest::post()
+            .uri(&format!("/sheet/{sheet_id}"))
+            .set_payload(r#"{ "column": "B", "row": 5, "value": 42 }"#)
+            .insert_header(ContentType::json())
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        dbg!(&resp);
+        assert!(resp.status().is_success());
+
+        let req = test::TestRequest::post()
+            .uri(&format!("/sheet/{sheet_id}"))
+            .set_payload(r#"{ "column": "B", "row": 5, "value": 43 }"#)
+            .insert_header(ContentType::json())
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        dbg!(&resp);
+        assert!(resp.status().is_success());
+    }
+
+    #[actix_web::test]
+    async fn test_post_sheetid_invalid_type() {
+        let app = init_service!();
+
+        let sheet_id = get_standard_sheet(&app).await.expect("valid sheet failed");
+
+        let req = test::TestRequest::post()
+            .uri(&format!("/sheet/{sheet_id}"))
+            .set_payload(r#"{ "column": "A", "row": 5, "value": 42 }"#)
+            .insert_header(ContentType::json())
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert_is_error_response!(resp);
+    }
+
+    #[actix_web::test]
+    async fn test_post_sheetid_invalid_column() {
+        let app = init_service!();
+
+        let sheet_id = get_standard_sheet(&app).await.expect("valid sheet failed");
+
+        let req = test::TestRequest::post()
+            .uri(&format!("/sheet/{sheet_id}"))
+            .set_payload(r#"{ "column": "abracadabra", "row": 5, "value": 42 }"#)
+            .insert_header(ContentType::json())
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert_is_error_response!(resp);
+    }
+
+    #[actix_web::test]
+    async fn test_post_sheetid_invalid_sheet() {
+        let app = init_service!();
+
+        let req = test::TestRequest::post()
+            .uri("/sheet/abCDefGHijklMnOPqrst1234")
+            .set_payload(r#"{ "column": "abracadabra", "row": 5, "value": 42 }"#)
             .insert_header(ContentType::json())
             .to_request();
 
