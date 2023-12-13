@@ -35,11 +35,7 @@ impl TryFrom<&str> for SheetId {
 
     fn try_from(value: &str) -> Result<Self> {
         if value.len() != Self::LENGTH {
-            anyhow::bail!(
-                "invalid length: expected {}, got {}",
-                Self::LENGTH,
-                value.len()
-            );
+            anyhow::bail!("invalid length: expected {}, got {}", Self::LENGTH, value.len());
         } else if value.chars().any(|x| !x.is_ascii_alphanumeric()) {
             anyhow::bail!("invalid content: {value} is not alphanumeric");
         } else {
@@ -120,18 +116,15 @@ impl Db {
         .execute(tr.as_mut())
         .await?;
 
-        QueryBuilder::new(format!(
-            "INSERT INTO sheet_{}_columns (id, name, type) ",
-            &sheetid.0
-        ))
-        .push_values(schema.columns.iter().enumerate(), |mut b, (i, col)| {
-            b.push_bind(i as i64)
-                .push_bind(&col.name)
-                .push_bind(col.kind.get_sql_text());
-        })
-        .build()
-        .execute(tr.as_mut())
-        .await?;
+        QueryBuilder::new(format!("INSERT INTO sheet_{}_columns (id, name, type) ", &sheetid.0))
+            .push_values(schema.columns.iter().enumerate(), |mut b, (i, col)| {
+                b.push_bind(i as i64)
+                    .push_bind(&col.name)
+                    .push_bind(col.kind.get_sql_text());
+            })
+            .build()
+            .execute(tr.as_mut())
+            .await?;
 
         Ok(())
     }
@@ -271,13 +264,11 @@ impl Db {
         tr: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         sheetid: &SheetId,
     ) -> Result<bool> {
-        Ok(
-            sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM sheets WHERE id = ?);")
-                .bind(&sheetid.0)
-                .fetch_one(tr.as_mut())
-                .await?
-                == 1,
-        )
+        Ok(sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM sheets WHERE id = ?);")
+            .bind(&sheetid.0)
+            .fetch_one(tr.as_mut())
+            .await?
+            == 1)
     }
 
     pub async fn insert_cell(&self, sheetid: &SheetId, cell: &sheet::Cell) -> Result<()> {

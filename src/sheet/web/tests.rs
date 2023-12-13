@@ -60,10 +60,7 @@ async fn test_post_success() {
 
     let resp: serde_json::Value = test::call_and_read_body_json(&app, req).await;
     assert!(resp.is_object());
-    assert_eq!(
-        resp.as_object().unwrap().keys().collect::<Vec<_>>(),
-        ["sheet_id"]
-    )
+    assert_eq!(resp.as_object().unwrap().keys().collect::<Vec<_>>(), ["sheet_id"])
 }
 
 macro_rules! assert_is_error_response {
