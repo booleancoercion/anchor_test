@@ -76,7 +76,6 @@ impl Db {
         Self::new_inner(pool).await
     }
 
-    #[cfg(test)]
     /// Creates a new Db instance which uses a database in-memory, to avoid creating files when testing.
     pub async fn new_memory() -> Result<Self> {
         Self::new_inner(SqlitePool::connect(":memory:").await?).await

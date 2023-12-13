@@ -20,7 +20,12 @@ pub async fn main() -> Result<()> {
     // RUST_LOG environment variable.
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
 
-    let db = Db::new(DB_FILE).await?;
+    // this is here for integration testing since we don't want to create files
+    let db = if env::var("MEMORY_DB").is_ok() {
+        Db::new_memory().await?
+    } else {
+        Db::new(DB_FILE).await?
+    };
     let data = web::Data::new(AppData {
         db,
         no_lookup_nulls: env::var("NO_LOOKUP_NULLS").is_ok(),
