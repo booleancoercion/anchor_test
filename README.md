@@ -7,6 +7,13 @@ Make sure you have [Rust installed](https://rustup.rs/) (tested with Rust 1.74 o
 $ cargo run --release
 ```
 
+## Testing
+Simply run:
+```
+$ cargo test
+```
+Which will check all of the unit and integration tests.
+
 ## Architecture
 The server implements 3 endpoints, as required:
 - `POST /sheet` - create a new sheet using the provided schema.
