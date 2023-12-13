@@ -6,6 +6,7 @@ Make sure you have [Rust installed](https://rustup.rs/) (tested with Rust 1.74 o
 ```
 $ cargo run --release
 ```
+The server will bind to localhost:8080 - using port 8080 instead of 80 for convenience (since it's privileged).
 
 ## Testing
 Simply run:
